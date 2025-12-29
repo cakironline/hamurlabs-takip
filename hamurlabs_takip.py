@@ -311,7 +311,7 @@ if not df_pivot_source.empty:
 else: st.info("Veri yok.")
 
 # =========================================================================
-# YENİ EKLENEN KISIM: BEKLEYEN SİPARİŞLER (SEKMELİ YAPI)
+# GÜNCELLENEN KISIM: BEKLEYENLER (SIRALI + RENKLİ)
 # =========================================================================
 st.markdown("### ⏳ Bekleyen Sipariş Dağılımı")
 
@@ -322,14 +322,11 @@ if not df_waiting_only.empty:
     # 2. Her depo için bir kova (bucket) hazırla
     depo_buckets = {}
     
-    # 3. Her siparişi dönüp, hangi potansiyel depolara aitse oraya ekle
-    # Not: 'Potansiyel Depolar' alanı "Depo1, Depo2" şeklinde string içerir.
     for index, row in df_waiting_only.iterrows():
         potentials_str = str(row['Potansiyel Depolar'])
         if potentials_str == "-" or not potentials_str:
             continue
             
-        # Virgülle ayır ve temizle
         potential_list = [p.strip() for p in potentials_str.split(',')]
         
         for p_name in potential_list:
@@ -338,17 +335,51 @@ if not df_waiting_only.empty:
             depo_buckets[p_name].append(row)
     
     if depo_buckets:
-        # 4. Sekmeleri oluştur (İsim + Sayı)
-        sorted_depo_names = sorted(depo_buckets.keys())
-        tabs_labels = [f"{d_name} ({len(depo_buckets[d_name])})" for d_name in sorted_depo_names]
+        # 3. SIRALAMA: Adet sayısına göre büyükten küçüğe sırala
+        # sorted_items -> [('TOM', [row1, row2...]), ('Meram', [row1...])]
+        sorted_items = sorted(depo_buckets.items(), key=lambda item: len(item[1]), reverse=True)
         
+        # Etiketleri oluştur
+        tabs_labels = [f"{name} ({len(orders)})" for name, orders in sorted_items]
+        
+        # Sekmeleri oluştur
         tabs = st.tabs(tabs_labels)
         
-        # 5. Her sekmenin içine o depoya ait siparişleri bas
-        for i, d_name in enumerate(sorted_depo_names):
+        # 4. RENKLENDİRME (CSS INJECTION)
+        # Her sekme sırasına göre renk atayacağız
+        css_styles = ""
+        for i, (name, orders) in enumerate(sorted_items):
+            count = len(orders)
+            
+            # Renk Skalası Mantığı
+            if count >= 20:
+                color = "#d32f2f" # Koyu Kırmızı (Çok Acil)
+            elif count >= 10:
+                color = "#f57c00" # Turuncu (Orta)
+            elif count >= 5:
+                color = "#1976d2" # Mavi (Normal)
+            else:
+                color = "#2e7d32" # Yeşil (Az)
+            
+            # Streamlit tab butonlarını nth-child ile hedefliyoruz (1'den başlar)
+            css_styles += f"""
+            div[data-baseweb="tab-list"] button:nth-of-type({i+1}) p {{
+                color: {color} !important;
+                font-weight: 800 !important;
+                font-size: 16px !important;
+            }}
+            div[data-baseweb="tab-list"] button:nth-of-type({i+1}) {{
+                border-bottom-color: {color} !important;
+            }}
+            """
+        
+        # CSS'i sayfaya göm
+        st.markdown(f"<style>{css_styles}</style>", unsafe_allow_html=True)
+        
+        # 5. İçerikleri Doldur
+        for i, (d_name, orders) in enumerate(sorted_items):
             with tabs[i]:
-                # Listeyi tekrar DataFrame'e çevir
-                df_subset = pd.DataFrame(depo_buckets[d_name])
+                df_subset = pd.DataFrame(orders)
                 st.dataframe(
                     df_subset, 
                     use_container_width=True, 
@@ -364,6 +395,7 @@ else:
     st.success("Harika! Bekleyen sipariş bulunmuyor.")
 
 st.markdown("---")
+# =========================================================================
 # =========================================================================
 
 st.markdown("### 📋 Tüm Siparişler")
