@@ -4,7 +4,6 @@ import pandas as pd
 import plotly.express as px
 import random
 from datetime import datetime, timedelta
-import math
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(
@@ -77,10 +76,12 @@ DEPO_MAP = {
     "4206": "Plus", "M": "Aykent Depo", "4202": "Sportive"
 }
 
+# GÜNCELLENDİ: Status Map'e yeni durumlar eklendi
 STATUS_MAP = {
     "Shipped": "Kargolanmış", "Waiting": "Bekliyor", "Cancelled": "İptal",
     "Invoiced": "Faturalanmış", "Loaded Delivery": "Teslimata Yüklenmiş",
-    "Picked": "Paketlendi", "Packed": "Paketlendi", "Created": "Oluşturuldu"
+    "Picked": "Paketlendi", "Packed": "Paketlendi", "Created": "Oluşturuldu",
+    "Returned": "İade", "Delivered": "Teslim Edilmiş"
 }
 
 # --- POPUP FONKSİYONU ---
@@ -122,7 +123,8 @@ def fetch_all_orders(use_demo_data=False):
     all_orders = []
     if use_demo_data:
         shops = ["Trendyol", "Hepsiburada", "Shopify", "Amazon", "Flo"]
-        statuses = ["Invoiced", "Shipped", "Loaded Delivery", "Picked", "Waiting", "Cancelled"]
+        # İade ve Teslim Edilmiş durumlarını da ekleyelim ki test edebilelim
+        statuses = ["Invoiced", "Shipped", "Loaded Delivery", "Picked", "Waiting", "Cancelled", "Returned", "Delivered"]
         all_codes = list(DEPO_MAP.keys())
         for i in range(1, 150):
             status_name = random.choice(statuses)
@@ -131,13 +133,10 @@ def fetch_all_orders(use_demo_data=False):
             
             actual_wh_code = random.choice(pool_codes) if status_name != "Waiting" else None
             
-            # --- TARİH SİMÜLASYONU (BAR GRAFİĞİ İÇİN) ---
-            # created_at: Şu andan geriye doğru rastgele 1-30 saat öncesi
-            # shipped_at: created_at + 24 saat (SLA süresi)
-            
+            # --- TARİH SİMÜLASYONU ---
             hours_ago = random.randint(1, 30)
             mock_created_dt = datetime.now() - timedelta(hours=hours_ago)
-            mock_shipped_dt = mock_created_dt + timedelta(hours=24) # 24 saat kargo süresi
+            mock_shipped_dt = mock_created_dt + timedelta(hours=24) # 24 saat SLA
             
             mock_created_str = mock_created_dt.strftime("%Y-%m-%d %H:%M:%S")
             mock_shipped_str = mock_shipped_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -151,7 +150,7 @@ def fetch_all_orders(use_demo_data=False):
                 "customer_name": f"Müşteri {i}", "status": status_name, 
                 "warehouses": warehouses_str, "warehouse_code": actual_wh_code,
                 "created_at": mock_created_str,
-                "shipped_at": mock_shipped_str, # Yeni Alan
+                "shipped_at": mock_shipped_str,
                 "total_quantity": random.randint(1, 5),
                 "items": [{"product_name": f"Ürün {i}", "selling_price": 150, "quantity": 1}],
                 "status_history": fake_history
@@ -192,8 +191,14 @@ def process_data(orders):
     bugun_str = datetime.now().strftime("%Y-%m-%d")
     simdi_dt = datetime.now()
 
-    # Tamamlanmış statüler (Bunlar için geri sayım yapılmaz)
-    completed_statuses = ["Kargolanmış", "Faturalanmış", "Teslimata Yüklenmiş", "İptal"]
+    # GÜNCELLENDİ: Bu statülerde süre hesabı yapılmaz, hepsi "Tamamlandı" sayılır.
+    completed_statuses = ["Kargolanmış", "Faturalanmış", "Teslimata Yüklenmiş", "İptal", "İade", "Teslim Edilmiş"]
+    # NOT: Faturalanmış ve Teslimata Yüklenmiş hala operasyonda olabilir ama "Gecikme" genelde kargoya verilmediği için olur.
+    # Eğer "Faturalanmış" siparişi de gecikmeye sokmak isterseniz aşağıdaki listeden çıkarın.
+    # Kullanıcı isteği: Waiting, Invoiced, Picked ve Loaded Delivery KONTROL EDİLMELİ.
+    
+    # Bu yüzden sadece "Tamamlanmış Bitenleri" buraya yazıyoruz:
+    ignored_deadline_statuses = ["Kargolanmış", "İade", "Teslim Edilmiş", "İptal"]
 
     for o in orders:
         total_price = sum([item.get('selling_price', 0) * item.get('quantity', 0) for item in o.get('items', [])])
@@ -201,7 +206,7 @@ def process_data(orders):
         tr_status = STATUS_MAP.get(raw_status, raw_status)
         readable_code = DEPO_MAP.get(str(o.get('warehouse_code')).strip(), o.get('warehouse_code')) if o.get('warehouse_code') else "Henüz Atanmadı"
         
-        # --- PACKED TODAY HESABI ---
+        # --- PACKED TODAY ---
         packed_today = False
         history = o.get('status_history', [])
         if history is None: history = []
@@ -216,29 +221,27 @@ def process_data(orders):
             created_dt = pd.to_datetime(o.get('created_at'))
             shipped_deadline_dt = pd.to_datetime(o.get('shipping_at'))
             
-            # Eğer tarih yoksa veya işlem zaten bitmişse
-            if pd.isna(shipped_deadline_dt) or tr_status in completed_statuses:
+            # Eğer statü "Görmezden Gelinen" (Kargolandı, İade vb.) ise hesaplama yapma
+            if tr_status in ignored_deadline_statuses:
                 kalan_sure_text = "✅ Tamamlandı"
-                bar_value = 0.0 # Bar boş
+                bar_value = 0.0
+            elif pd.isna(shipped_deadline_dt):
+                kalan_sure_text = "-"
+                bar_value = 0.0
             else:
-                # Toplam verilmiş süre (Örn: 24 saat)
+                # Aktif sipariş (Waiting, Invoiced, Picked, Loaded Delivery)
                 total_duration = (shipped_deadline_dt - created_dt).total_seconds()
-                # Şu ana kadar geçen süre
                 elapsed_duration = (simdi_dt - created_dt).total_seconds()
-                
-                # Kalan saniye
                 remaining_seconds = (shipped_deadline_dt - simdi_dt).total_seconds()
 
                 if remaining_seconds < 0:
                     kalan_sure_text = "⚠️ GECİKMEDE"
-                    bar_value = 1.0 # Bar tamamen dolu (Kırmızı anlamında)
+                    bar_value = 1.0 # Kırmızı
                 else:
-                    # Saat ve dakika hesabı
                     rem_hours = int(remaining_seconds // 3600)
                     rem_mins = int((remaining_seconds % 3600) // 60)
                     kalan_sure_text = f"{rem_hours} sa {rem_mins} dk"
                     
-                    # Bar doluluk oranı (Geçen Süre / Toplam Süre)
                     if total_duration > 0:
                         ratio = elapsed_duration / total_duration
                         bar_value = min(max(ratio, 0.0), 1.0)
@@ -258,8 +261,8 @@ def process_data(orders):
             "Adet": o.get('total_quantity', 0), 
             "Tutar": total_price,
             "packed_today_flag": 1 if packed_today else 0,
-            "Kalan Süre": kalan_sure_text,  # Metin Alanı
-            "Süre Kullanımı": bar_value     # Bar Alanı (0.0 - 1.0)
+            "Kalan Süre": kalan_sure_text,
+            "Süre Kullanımı": bar_value
         })
     return pd.DataFrame(processed)
 
@@ -414,7 +417,6 @@ if not df_waiting_only.empty:
         for i, (d_name, orders) in enumerate(sorted_items):
             with tabs[i]:
                 df_subset = pd.DataFrame(orders)
-                # BURADA SÜRE KOLONUNU GÖSTERİYORUZ
                 st.dataframe(
                     df_subset, 
                     use_container_width=True, 
@@ -422,7 +424,6 @@ if not df_waiting_only.empty:
                     column_config={
                         "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f ₺"),
                         "Adet": st.column_config.ProgressColumn("Adet", min_value=0, max_value=10),
-                        # YENİ KOLON KONFİGÜRASYONU
                         "Süre Kullanımı": st.column_config.ProgressColumn("Aciliyet", min_value=0, max_value=1),
                         "Kalan Süre": st.column_config.TextColumn("Kalan Zaman")
                     }
@@ -434,13 +435,19 @@ else:
 
 st.markdown("---")
 
+# =========================================================================
+# TÜM SİPARİŞLER (GÜNCELLENMİŞ FİLTRE)
+# =========================================================================
 st.markdown("### 📋 Tüm Siparişler")
 f1, f2, f3 = st.columns(3)
 with f1: sel_status = st.multiselect("Durum Filtrele", df['Durum'].unique())
 with f2: sel_actor = st.multiselect("Şube Filtrele", sorted(list(df[df['İşlemi Yapan']!="Henüz Atanmadı"]['İşlemi Yapan'].unique())))
 with f3: search_term = st.text_input("Sipariş Ara")
 
-df_show = df.copy()
+# 1. Tamamlanmış siparişleri listeden çıkart (Görmeye gerek yok)
+hide_completed_in_list = ["Kargolanmış", "İade", "Teslim Edilmiş", "İptal"]
+df_show = df[~df['Durum'].isin(hide_completed_in_list)].copy()
+
 if sel_status: df_show = df_show[df_show['Durum'].isin(sel_status)]
 
 if sel_actor:
@@ -452,7 +459,6 @@ if sel_actor:
 if search_term: 
     df_show = df_show[df_show['Sipariş No'].str.contains(search_term, case=False) | df_show['Müşteri'].str.contains(search_term, case=False)]
 
-# ANA TABLODA DA SÜRE BARINI GÖSTER
 st.dataframe(df_show, use_container_width=True, hide_index=True, column_config={
     "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f ₺"),
     "Adet": st.column_config.ProgressColumn("Adet", format="%f", min_value=0, max_value=10),
