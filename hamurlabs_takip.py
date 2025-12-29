@@ -311,15 +311,19 @@ if not df_pivot_source.empty:
 else: st.info("Veri yok.")
 
 # =========================================================================
-# GÜNCELLENEN KISIM: BEKLEYENLER (SIRALI + RENKLİ)
 # =========================================================================
-st.markdown("### ⏳ Bekleyen Sipariş Dağılımı")
+# GÜNCELLENEN KISIM: BEKLEYENLER (BAŞLIKTA TOPLAM SAYI)
+# =========================================================================
 
-# 1. Sadece bekleyenleri süz
+# 1. Önce filtreleme yapıyoruz ki sayıyı bilelim
 df_waiting_only = df[df['Durum'] == 'Bekliyor']
+total_waiting_count = len(df_waiting_only)
+
+# 2. Başlığı sayı ile birlikte yazdırıyoruz
+st.markdown(f"### ⏳ Bekleyen Sipariş Dağılımı ({total_waiting_count})")
 
 if not df_waiting_only.empty:
-    # 2. Her depo için bir kova (bucket) hazırla
+    # 3. Her depo için bir kova (bucket) hazırla
     depo_buckets = {}
     
     for index, row in df_waiting_only.iterrows():
@@ -335,8 +339,7 @@ if not df_waiting_only.empty:
             depo_buckets[p_name].append(row)
     
     if depo_buckets:
-        # 3. SIRALAMA: Adet sayısına göre büyükten küçüğe sırala
-        # sorted_items -> [('TOM', [row1, row2...]), ('Meram', [row1...])]
+        # SIRALAMA: Adet sayısına göre büyükten küçüğe
         sorted_items = sorted(depo_buckets.items(), key=lambda item: len(item[1]), reverse=True)
         
         # Etiketleri oluştur
@@ -345,23 +348,21 @@ if not df_waiting_only.empty:
         # Sekmeleri oluştur
         tabs = st.tabs(tabs_labels)
         
-        # 4. RENKLENDİRME (CSS INJECTION)
-        # Her sekme sırasına göre renk atayacağız
+        # RENKLENDİRME (CSS INJECTION)
         css_styles = ""
         for i, (name, orders) in enumerate(sorted_items):
             count = len(orders)
             
-            # Renk Skalası Mantığı
+            # Renk Skalası
             if count >= 20:
-                color = "#d32f2f" # Koyu Kırmızı (Çok Acil)
+                color = "#d32f2f" # Koyu Kırmızı
             elif count >= 10:
-                color = "#f57c00" # Turuncu (Orta)
+                color = "#f57c00" # Turuncu
             elif count >= 5:
-                color = "#1976d2" # Mavi (Normal)
+                color = "#1976d2" # Mavi
             else:
-                color = "#2e7d32" # Yeşil (Az)
+                color = "#2e7d32" # Yeşil
             
-            # Streamlit tab butonlarını nth-child ile hedefliyoruz (1'den başlar)
             css_styles += f"""
             div[data-baseweb="tab-list"] button:nth-of-type({i+1}) p {{
                 color: {color} !important;
@@ -373,10 +374,9 @@ if not df_waiting_only.empty:
             }}
             """
         
-        # CSS'i sayfaya göm
         st.markdown(f"<style>{css_styles}</style>", unsafe_allow_html=True)
         
-        # 5. İçerikleri Doldur
+        # İçerikleri Doldur
         for i, (d_name, orders) in enumerate(sorted_items):
             with tabs[i]:
                 df_subset = pd.DataFrame(orders)
@@ -385,7 +385,8 @@ if not df_waiting_only.empty:
                     use_container_width=True, 
                     hide_index=True,
                     column_config={
-                        "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f ₺")
+                        "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f ₺"),
+                        "Adet": st.column_config.ProgressColumn("Adet", min_value=0, max_value=10)
                     }
                 )
     else:
@@ -394,6 +395,7 @@ else:
     st.success("Harika! Bekleyen sipariş bulunmuyor.")
 
 st.markdown("---")
+# =========================================================================
 # =========================================================================
 # =========================================================================
 
