@@ -104,7 +104,6 @@ def open_order_popup(status_name, df_data):
             final_filtered, use_container_width=True, hide_index=True,
             column_config={
                 "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f ₺"),
-                "Adet": st.column_config.ProgressColumn("Adet", min_value=0, max_value=10),
                 "Süre Kullanımı": st.column_config.ProgressColumn("Aciliyet", min_value=0, max_value=1, format="%.2f")
             }
         )
@@ -423,7 +422,6 @@ if not df_waiting_only.empty:
                     hide_index=True,
                     column_config={
                         "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f ₺"),
-                        "Adet": st.column_config.ProgressColumn("Adet", min_value=0, max_value=10),
                         "Süre Kullanımı": st.column_config.ProgressColumn("Aciliyet", min_value=0, max_value=1),
                         "Kalan Süre": st.column_config.TextColumn("Kalan Zaman")
                     }
