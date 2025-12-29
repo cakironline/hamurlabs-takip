@@ -214,7 +214,7 @@ def process_data(orders):
         # --- KALAN SÜRE HESABI ---
         try:
             created_dt = pd.to_datetime(o.get('created_at'))
-            shipped_deadline_dt = pd.to_datetime(o.get('shipped_at'))
+            shipped_deadline_dt = pd.to_datetime(o.get('shipping_at'))
             
             # Eğer tarih yoksa veya işlem zaten bitmişse
             if pd.isna(shipped_deadline_dt) or tr_status in completed_statuses:
