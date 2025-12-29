@@ -331,7 +331,18 @@ with f2: sel_actor = st.multiselect("Şube Filtrele", df['İşlemi Yapan'].uniqu
 with f3: search_term = st.text_input("Sipariş Ara")
 df_show = df.copy()
 if sel_status: df_show = df_show[df_show['Durum'].isin(sel_status)]
-if sel_actor: df_show = df_show[df_show['İşlemi Yapan'].isin(sel_actor)]
+if sel_actor:
+    # Seçilen şubelerden bir regex deseni oluştur (Örn: "Meram|Karatay")
+    pattern = '|'.join(sel_actor)
+    
+    # Kural 1: İşlemi bizzat yapan o şube ise
+    cond1 = df_show['İşlemi Yapan'].isin(sel_actor)
+    
+    # Kural 2: Sipariş 'Bekliyor' ise VE Potansiyel Depolar içinde bu şube geçiyorsa
+    cond2 = (df_show['Durum'] == 'Bekliyor') & (df_show['Potansiyel Depolar'].str.contains(pattern, na=False, regex=True))
+    
+    # İki durumdan biri geçerliyse göster
+    df_show = df_show[cond1 | cond2]
 if search_term: df_show = df_show[df_show['Sipariş No'].str.contains(search_term, case=False) | df_show['Müşteri'].str.contains(search_term, case=False)]
 st.dataframe(df_show, use_container_width=True, hide_index=True, column_config={
     "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f ₺"),
