@@ -56,9 +56,14 @@ bugun_baslangic = simdi.replace(hour=0, minute=0, second=0, microsecond=0)
 # Bugünün sonu (Saat 23:59:59)
 bugun_bitis = simdi.replace(hour=23, minute=59, second=59, microsecond=0)
 
+# --- YENİ KISIM: 1 Hafta Öncesini Hesapla ---
+bir_hafta_once = bugun_baslangic - timedelta(days=7)
+
 # API'nin istediği string formatına ("Yıl-Ay-Gün Saat:Dakika:Saniye") çevir
 start_str = bugun_baslangic.strftime("%Y-%m-%d %H:%M:%S")
 end_str = bugun_bitis.strftime("%Y-%m-%d %H:%M:%S")
+created_start_str = bir_hafta_once.strftime("%Y-%m-%d %H:%M:%S") # 1 hafta öncesi
+
 
 # --- SABİTLER ---
 HAMURLABS_URL = "http://dgn.hamurlabs.io/api/order/v2/search/"
@@ -144,7 +149,7 @@ def fetch_all_orders(use_demo_data=False):
                 "company_id": "1",
                 "updated_at__start": start_str, # Tarihleri dinamik yapabilirsin
                 "updated_at__end": end_str,
-                "created_at__start": start_str,
+                "created_at__start": created_start_str,
                 "created_at__end": end_str,
                 "size": PAGE_SIZE,
                 "start": start,
