@@ -385,8 +385,7 @@ if not df_waiting_only.empty:
                     use_container_width=True, 
                     hide_index=True,
                     column_config={
-                        "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f ₺"),
-                        "Adet": st.column_config.ProgressColumn("Adet", min_value=0, max_value=10)
+                        "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f ₺")
                     }
                 )
     else:
@@ -422,6 +421,5 @@ if search_term:
     df_show = df_show[df_show['Sipariş No'].str.contains(search_term, case=False) | df_show['Müşteri'].str.contains(search_term, case=False)]
 
 st.dataframe(df_show, use_container_width=True, hide_index=True, column_config={
-    "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f ₺"),
-    "Adet": st.column_config.ProgressColumn("Adet", format="%f", min_value=0, max_value=10)
+    "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f ₺")
 })
