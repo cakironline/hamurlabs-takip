@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 import plotly.express as px
 import random
-from datetime import datetime,timedelta
+from datetime import datetime, timedelta
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(
@@ -13,7 +13,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CSS: BUTONLARI EŞİT KARTLARA DÖNÜŞTÜRME ---
+# --- CSS ---
 st.markdown("""
 <style>
     div.stButton > button {
@@ -47,23 +47,17 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# Şimdiki zamanı al
+# --- TARİH HESAPLAMALARI ---
 simdi = datetime.now()
+bugun_tarih_str = simdi.strftime("%Y-%m-%d") # Sadece Yıl-Ay-Gün (Karşılaştırma için)
 
-# Bugünün başlangıcı (Saat 00:00:00)
 bugun_baslangic = simdi.replace(hour=0, minute=0, second=0, microsecond=0)
-
-# Bugünün sonu (Saat 23:59:59)
 bugun_bitis = simdi.replace(hour=23, minute=59, second=59, microsecond=0)
-
-# --- YENİ KISIM: 1 Hafta Öncesini Hesapla ---
 bir_hafta_once = bugun_baslangic - timedelta(days=7)
 
-# API'nin istediği string formatına ("Yıl-Ay-Gün Saat:Dakika:Saniye") çevir
 start_str = bugun_baslangic.strftime("%Y-%m-%d %H:%M:%S")
 end_str = bugun_bitis.strftime("%Y-%m-%d %H:%M:%S")
-created_start_str = bir_hafta_once.strftime("%Y-%m-%d %H:%M:%S") # 1 hafta öncesi
-
+created_start_str = bir_hafta_once.strftime("%Y-%m-%d %H:%M:%S")
 
 # --- SABİTLER ---
 HAMURLABS_URL = "http://dgn.hamurlabs.io/api/order/v2/search/"
@@ -133,12 +127,24 @@ def fetch_all_orders(use_demo_data=False):
             pool_codes = random.sample(all_codes, k=random.randint(1, 3))
             warehouses_str = ",".join(pool_codes)
             actual_wh_code = random.choice(pool_codes) if status_name != "Waiting" else None
+            
+            # --- DEMO İÇİN FAKE HISTORY OLUŞTURMA ---
+            # Rastgele bazılarının packed tarihini bugün yapıyoruz
+            is_packed_today = random.choice([True, False])
+            fake_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S") if is_packed_today else "2023-01-01 10:00:00"
+            
+            fake_history = [
+                {"status": "created", "date": "2024-01-01 10:00:00"},
+                {"status": "packed", "date": fake_date} 
+            ]
+            
             all_orders.append({
                 "order_id": 1000 + i, "shop": random.choice(shops),
                 "customer_name": f"Müşteri {i}", "status": status_name, 
                 "warehouses": warehouses_str, "warehouse_code": actual_wh_code,
                 "created_at": "2024-06-03 14:25:56", "total_quantity": random.randint(1, 5),
-                "items": [{"product_name": f"Ürün {i}", "selling_price": 150, "quantity": 1}]
+                "items": [{"product_name": f"Ürün {i}", "selling_price": 150, "quantity": 1}],
+                "status_history": fake_history # <-- History eklendi
             })
         return all_orders
 
@@ -147,7 +153,7 @@ def fetch_all_orders(use_demo_data=False):
         while len(all_orders) < total_records:
             payload = {
                 "company_id": "1",
-                "updated_at__start": start_str, # Tarihleri dinamik yapabilirsin
+                "updated_at__start": start_str, 
                 "updated_at__end": end_str,
                 "size": PAGE_SIZE,
                 "start": start,
@@ -172,11 +178,30 @@ def fetch_all_orders(use_demo_data=False):
 def process_data(orders):
     if not orders: return pd.DataFrame()
     processed = []
+    
+    # Bugünün tarihini string olarak al (Örn: "2025-12-29")
+    bugun_str = datetime.now().strftime("%Y-%m-%d")
+
     for o in orders:
         total_price = sum([item.get('selling_price', 0) * item.get('quantity', 0) for item in o.get('items', [])])
         raw_status = o.get('status')
         tr_status = STATUS_MAP.get(raw_status, raw_status)
         readable_code = DEPO_MAP.get(str(o.get('warehouse_code')).strip(), o.get('warehouse_code')) if o.get('warehouse_code') else "Henüz Atanmadı"
+        
+        # --- PACKED TODAY KONTROLÜ ---
+        packed_today = False
+        history = o.get('status_history', [])
+        
+        # Eğer history None gelirse boş liste yap
+        if history is None: history = []
+            
+        for h in history:
+            # Durum 'packed' ise VE tarihi varsa
+            if h.get('status') == 'packed' and h.get('date'):
+                # Tarih bugünün tarihi ile başlıyorsa (Saat önemli değil)
+                if str(h.get('date')).startswith(bugun_str):
+                    packed_today = True
+                    break
         
         processed.append({
             "Sipariş No": str(o.get('tracker_code', o.get('order_id'))),
@@ -184,7 +209,8 @@ def process_data(orders):
             "Potansiyel Depolar": resolve_warehouse_names(o.get('warehouses')),
             "İşlemi Yapan": readable_code,
             "Durum": tr_status, "Müşteri": o.get('customer_name'),
-            "Adet": o.get('total_quantity', 0), "Tutar": total_price
+            "Adet": o.get('total_quantity', 0), "Tutar": total_price,
+            "packed_today_flag": 1 if packed_today else 0 # <-- Yeni Kolon
         })
     return pd.DataFrame(processed)
 
@@ -242,48 +268,42 @@ st.markdown("---")
 c1, c2, c3 = st.columns(3)
 with c1:
     st.subheader("🛍️ Pazaryeri")
-    # Veriyi önce bir değişkene atayalım ki okuması kolay olsun
     marketplace_data = df['Mağaza'].value_counts().reset_index()
-    
-    # Grafiği oluştururken 'text' parametresini ekliyoruz
     fig_market = px.bar(
         marketplace_data, 
-        x='Mağaza', 
-        y='count', 
-        color='Mağaza', 
-        text='count'  # <-- BU SATIR RAKAMLARI GETİRİR
+        x='Mağaza', y='count', color='Mağaza', text='count'
     )
-    
-    # Rakamların sütunun üzerinde (dışında) durması ve formatı için ayar
     fig_market.update_traces(textposition='outside', textfont_size=12)
-    
-    # Grafiği çizdir
     st.plotly_chart(fig_market, use_container_width=True)
 with c2:
     st.subheader("📦 Durumlar")
     st.plotly_chart(px.pie(df['Durum'].value_counts().reset_index(), values='count', names='Durum', hole=0.4), use_container_width=True)
 
-# *** GÜNCELLENEN KISIM: TREEMAP ÜZERİNE RAKAM EKLEME ***
+# *** GÜNCELLENEN KISIM: TREEMAP ARTIK SADECE BUGÜN PAKETLENENLERİ SAYAR ***
 with c3:
-    st.subheader("🏆 Şube Performansı")
+    st.subheader("🏆 Bugün Paketleyenler") # Başlığı güncelledik
     df_assigned = df[df['İşlemi Yapan'] != "Henüz Atanmadı"]
-    if not df_assigned.empty:
-        perf_counts = df_assigned['İşlemi Yapan'].value_counts().reset_index()
-        perf_counts.columns = ['Şube', 'Sipariş']
+    
+    # Sadece bugün paketlenenlerin olduğu satırları al (1 olanlar)
+    df_packed_today = df_assigned[df_assigned['packed_today_flag'] == 1]
+    
+    if not df_packed_today.empty:
+        # Şubeye göre grupla ve say
+        perf_counts = df_packed_today['İşlemi Yapan'].value_counts().reset_index()
+        perf_counts.columns = ['Şube', 'Bugün Paketlenen']
         
-        # Treemap grafiği
         fig_perf = px.treemap(
             perf_counts, 
             path=['Şube'], 
-            values='Sipariş', 
-            color='Sipariş',
+            values='Bugün Paketlenen', 
+            color='Bugün Paketlenen',
             color_continuous_scale='Viridis'
         )
         
-        # BU SATIR EKLENDİ: Kutuların üzerinde hem İSİM hem DEĞER yazar
         fig_perf.update_traces(textinfo="label+value")
-        
         st.plotly_chart(fig_perf, use_container_width=True)
+    else:
+        st.info("Bugün 'packed' durumuna geçen sipariş yok.")
 
 st.markdown("### 🏢 Mağaza Karnesi")
 target_statuses = ["Faturalanmış", "Teslimata Yüklenmiş", "Kargolanmış"]
