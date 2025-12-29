@@ -49,7 +49,7 @@ st.markdown("""
 
 # --- TARİH HESAPLAMALARI ---
 simdi = datetime.now()
-bugun_tarih_str = simdi.strftime("%Y-%m-%d") # Sadece Yıl-Ay-Gün (Karşılaştırma için)
+bugun_tarih_str = simdi.strftime("%Y-%m-%d") 
 
 bugun_baslangic = simdi.replace(hour=0, minute=0, second=0, microsecond=0)
 bugun_bitis = simdi.replace(hour=23, minute=59, second=59, microsecond=0)
@@ -126,13 +126,11 @@ def fetch_all_orders(use_demo_data=False):
             status_name = random.choice(statuses)
             pool_codes = random.sample(all_codes, k=random.randint(1, 3))
             warehouses_str = ",".join(pool_codes)
+            
             actual_wh_code = random.choice(pool_codes) if status_name != "Waiting" else None
             
-            # --- DEMO İÇİN FAKE HISTORY OLUŞTURMA ---
-            # Rastgele bazılarının packed tarihini bugün yapıyoruz
             is_packed_today = random.choice([True, False])
             fake_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S") if is_packed_today else "2023-01-01 10:00:00"
-            
             fake_history = [
                 {"status": "created", "date": "2024-01-01 10:00:00"},
                 {"status": "packed", "date": fake_date} 
@@ -144,7 +142,7 @@ def fetch_all_orders(use_demo_data=False):
                 "warehouses": warehouses_str, "warehouse_code": actual_wh_code,
                 "created_at": "2024-06-03 14:25:56", "total_quantity": random.randint(1, 5),
                 "items": [{"product_name": f"Ürün {i}", "selling_price": 150, "quantity": 1}],
-                "status_history": fake_history # <-- History eklendi
+                "status_history": fake_history
             })
         return all_orders
 
@@ -155,6 +153,8 @@ def fetch_all_orders(use_demo_data=False):
                 "company_id": "1",
                 "updated_at__start": start_str, 
                 "updated_at__end": end_str,
+                "created_at__start": created_start_str,
+                "created_at__end": end_str,
                 "size": PAGE_SIZE,
                 "start": start,
                 "order_types": ["selling"]
@@ -179,7 +179,6 @@ def process_data(orders):
     if not orders: return pd.DataFrame()
     processed = []
     
-    # Bugünün tarihini string olarak al (Örn: "2025-12-29")
     bugun_str = datetime.now().strftime("%Y-%m-%d")
 
     for o in orders:
@@ -188,17 +187,11 @@ def process_data(orders):
         tr_status = STATUS_MAP.get(raw_status, raw_status)
         readable_code = DEPO_MAP.get(str(o.get('warehouse_code')).strip(), o.get('warehouse_code')) if o.get('warehouse_code') else "Henüz Atanmadı"
         
-        # --- PACKED TODAY KONTROLÜ ---
         packed_today = False
         history = o.get('status_history', [])
-        
-        # Eğer history None gelirse boş liste yap
         if history is None: history = []
-            
         for h in history:
-            # Durum 'packed' ise VE tarihi varsa
             if h.get('status') == 'packed' and h.get('date'):
-                # Tarih bugünün tarihi ile başlıyorsa (Saat önemli değil)
                 if str(h.get('date')).startswith(bugun_str):
                     packed_today = True
                     break
@@ -210,7 +203,7 @@ def process_data(orders):
             "İşlemi Yapan": readable_code,
             "Durum": tr_status, "Müşteri": o.get('customer_name'),
             "Adet": o.get('total_quantity', 0), "Tutar": total_price,
-            "packed_today_flag": 1 if packed_today else 0 # <-- Yeni Kolon
+            "packed_today_flag": 1 if packed_today else 0
         })
     return pd.DataFrame(processed)
 
@@ -279,16 +272,12 @@ with c2:
     st.subheader("📦 Durumlar")
     st.plotly_chart(px.pie(df['Durum'].value_counts().reset_index(), values='count', names='Durum', hole=0.4), use_container_width=True)
 
-# *** GÜNCELLENEN KISIM: TREEMAP ARTIK SADECE BUGÜN PAKETLENENLERİ SAYAR ***
 with c3:
-    st.subheader("🏆 Bugün Paketleyenler") # Başlığı güncelledik
+    st.subheader("🏆 Bugün Paketleyenler")
     df_assigned = df[df['İşlemi Yapan'] != "Henüz Atanmadı"]
-    
-    # Sadece bugün paketlenenlerin olduğu satırları al (1 olanlar)
     df_packed_today = df_assigned[df_assigned['packed_today_flag'] == 1]
     
     if not df_packed_today.empty:
-        # Şubeye göre grupla ve say
         perf_counts = df_packed_today['İşlemi Yapan'].value_counts().reset_index()
         perf_counts.columns = ['Şube', 'Bugün Paketlenen']
         
@@ -299,7 +288,6 @@ with c3:
             color='Bugün Paketlenen',
             color_continuous_scale='Viridis'
         )
-        
         fig_perf.update_traces(textinfo="label+value")
         st.plotly_chart(fig_perf, use_container_width=True)
     else:
@@ -324,26 +312,85 @@ if not df_pivot_source.empty:
     })
 else: st.info("Veri yok.")
 
+# =========================================================================
+# YENİ EKLENEN KISIM: BEKLEYEN SİPARİŞLER (SEKMELİ YAPI)
+# =========================================================================
+st.markdown("### ⏳ Bekleyen Sipariş Dağılımı")
+
+# 1. Sadece bekleyenleri süz
+df_waiting_only = df[df['Durum'] == 'Bekliyor']
+
+if not df_waiting_only.empty:
+    # 2. Her depo için bir kova (bucket) hazırla
+    depo_buckets = {}
+    
+    # 3. Her siparişi dönüp, hangi potansiyel depolara aitse oraya ekle
+    # Not: 'Potansiyel Depolar' alanı "Depo1, Depo2" şeklinde string içerir.
+    for index, row in df_waiting_only.iterrows():
+        potentials_str = str(row['Potansiyel Depolar'])
+        if potentials_str == "-" or not potentials_str:
+            continue
+            
+        # Virgülle ayır ve temizle
+        potential_list = [p.strip() for p in potentials_str.split(',')]
+        
+        for p_name in potential_list:
+            if p_name not in depo_buckets:
+                depo_buckets[p_name] = []
+            depo_buckets[p_name].append(row)
+    
+    if depo_buckets:
+        # 4. Sekmeleri oluştur (İsim + Sayı)
+        sorted_depo_names = sorted(depo_buckets.keys())
+        tabs_labels = [f"{d_name} ({len(depo_buckets[d_name])})" for d_name in sorted_depo_names]
+        
+        tabs = st.tabs(tabs_labels)
+        
+        # 5. Her sekmenin içine o depoya ait siparişleri bas
+        for i, d_name in enumerate(sorted_depo_names):
+            with tabs[i]:
+                # Listeyi tekrar DataFrame'e çevir
+                df_subset = pd.DataFrame(depo_buckets[d_name])
+                st.dataframe(
+                    df_subset, 
+                    use_container_width=True, 
+                    hide_index=True,
+                    column_config={
+                        "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f ₺"),
+                        "Adet": st.column_config.ProgressColumn("Adet", min_value=0, max_value=10)
+                    }
+                )
+    else:
+        st.info("Bekleyen sipariş var ancak potansiyel depo ataması yapılamamış.")
+else:
+    st.success("Harika! Bekleyen sipariş bulunmuyor.")
+
+st.markdown("---")
+# =========================================================================
+
 st.markdown("### 📋 Tüm Siparişler")
 f1, f2, f3 = st.columns(3)
 with f1: sel_status = st.multiselect("Durum Filtrele", df['Durum'].unique())
-with f2: sel_actor = st.multiselect("Şube Filtrele", df['İşlemi Yapan'].unique())
+with f2: sel_actor = st.multiselect("Şube Filtrele", sorted(list(df[df['İşlemi Yapan']!="Henüz Atanmadı"]['İşlemi Yapan'].unique())))
 with f3: search_term = st.text_input("Sipariş Ara")
+
 df_show = df.copy()
-if sel_status: df_show = df_show[df_show['Durum'].isin(sel_status)]
+
+# 1. Durum Filtresi
+if sel_status: 
+    df_show = df_show[df_show['Durum'].isin(sel_status)]
+
+# 2. Şube Filtresi (GELİŞMİŞ MANTIK)
 if sel_actor:
-    # Seçilen şubelerden bir regex deseni oluştur (Örn: "Meram|Karatay")
     pattern = '|'.join(sel_actor)
-    
-    # Kural 1: İşlemi bizzat yapan o şube ise
     cond1 = df_show['İşlemi Yapan'].isin(sel_actor)
-    
-    # Kural 2: Sipariş 'Bekliyor' ise VE Potansiyel Depolar içinde bu şube geçiyorsa
     cond2 = (df_show['Durum'] == 'Bekliyor') & (df_show['Potansiyel Depolar'].str.contains(pattern, na=False, regex=True))
-    
-    # İki durumdan biri geçerliyse göster
     df_show = df_show[cond1 | cond2]
-if search_term: df_show = df_show[df_show['Sipariş No'].str.contains(search_term, case=False) | df_show['Müşteri'].str.contains(search_term, case=False)]
+
+# 3. Arama Filtresi
+if search_term: 
+    df_show = df_show[df_show['Sipariş No'].str.contains(search_term, case=False) | df_show['Müşteri'].str.contains(search_term, case=False)]
+
 st.dataframe(df_show, use_container_width=True, hide_index=True, column_config={
     "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f ₺"),
     "Adet": st.column_config.ProgressColumn("Adet", format="%f", min_value=0, max_value=10)
