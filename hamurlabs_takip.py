@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 import plotly.express as px
 import random
-from datetime import datetime
+from datetime import datetime,timedelta
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(
