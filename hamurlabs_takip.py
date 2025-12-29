@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.express as px
 import random
 from datetime import datetime, timedelta
+import math
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(
@@ -102,7 +103,8 @@ def open_order_popup(status_name, df_data):
             final_filtered, use_container_width=True, hide_index=True,
             column_config={
                 "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f ₺"),
-                "Adet": st.column_config.ProgressColumn("Adet", min_value=0, max_value=10)
+                "Adet": st.column_config.ProgressColumn("Adet", min_value=0, max_value=10),
+                "Süre Kullanımı": st.column_config.ProgressColumn("Aciliyet", min_value=0, max_value=1, format="%.2f")
             }
         )
         st.caption(f"Toplam {len(base_filtered)} kayıttan {len(final_filtered)} tanesi gösteriliyor.")
@@ -129,18 +131,28 @@ def fetch_all_orders(use_demo_data=False):
             
             actual_wh_code = random.choice(pool_codes) if status_name != "Waiting" else None
             
+            # --- TARİH SİMÜLASYONU (BAR GRAFİĞİ İÇİN) ---
+            # created_at: Şu andan geriye doğru rastgele 1-30 saat öncesi
+            # shipped_at: created_at + 24 saat (SLA süresi)
+            
+            hours_ago = random.randint(1, 30)
+            mock_created_dt = datetime.now() - timedelta(hours=hours_ago)
+            mock_shipped_dt = mock_created_dt + timedelta(hours=24) # 24 saat kargo süresi
+            
+            mock_created_str = mock_created_dt.strftime("%Y-%m-%d %H:%M:%S")
+            mock_shipped_str = mock_shipped_dt.strftime("%Y-%m-%d %H:%M:%S")
+
             is_packed_today = random.choice([True, False])
             fake_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S") if is_packed_today else "2023-01-01 10:00:00"
-            fake_history = [
-                {"status": "created", "date": "2024-01-01 10:00:00"},
-                {"status": "packed", "date": fake_date} 
-            ]
+            fake_history = [{"status": "created", "date": mock_created_str}, {"status": "packed", "date": fake_date}]
             
             all_orders.append({
                 "order_id": 1000 + i, "shop": random.choice(shops),
                 "customer_name": f"Müşteri {i}", "status": status_name, 
                 "warehouses": warehouses_str, "warehouse_code": actual_wh_code,
-                "created_at": "2024-06-03 14:25:56", "total_quantity": random.randint(1, 5),
+                "created_at": mock_created_str,
+                "shipped_at": mock_shipped_str, # Yeni Alan
+                "total_quantity": random.randint(1, 5),
                 "items": [{"product_name": f"Ürün {i}", "selling_price": 150, "quantity": 1}],
                 "status_history": fake_history
             })
@@ -178,6 +190,10 @@ def process_data(orders):
     processed = []
     
     bugun_str = datetime.now().strftime("%Y-%m-%d")
+    simdi_dt = datetime.now()
+
+    # Tamamlanmış statüler (Bunlar için geri sayım yapılmaz)
+    completed_statuses = ["Kargolanmış", "Faturalanmış", "Teslimata Yüklenmiş", "İptal"]
 
     for o in orders:
         total_price = sum([item.get('selling_price', 0) * item.get('quantity', 0) for item in o.get('items', [])])
@@ -185,6 +201,7 @@ def process_data(orders):
         tr_status = STATUS_MAP.get(raw_status, raw_status)
         readable_code = DEPO_MAP.get(str(o.get('warehouse_code')).strip(), o.get('warehouse_code')) if o.get('warehouse_code') else "Henüz Atanmadı"
         
+        # --- PACKED TODAY HESABI ---
         packed_today = False
         history = o.get('status_history', [])
         if history is None: history = []
@@ -194,14 +211,55 @@ def process_data(orders):
                     packed_today = True
                     break
         
+        # --- KALAN SÜRE HESABI ---
+        try:
+            created_dt = pd.to_datetime(o.get('created_at'))
+            shipped_deadline_dt = pd.to_datetime(o.get('shipped_at'))
+            
+            # Eğer tarih yoksa veya işlem zaten bitmişse
+            if pd.isna(shipped_deadline_dt) or tr_status in completed_statuses:
+                kalan_sure_text = "✅ Tamamlandı"
+                bar_value = 0.0 # Bar boş
+            else:
+                # Toplam verilmiş süre (Örn: 24 saat)
+                total_duration = (shipped_deadline_dt - created_dt).total_seconds()
+                # Şu ana kadar geçen süre
+                elapsed_duration = (simdi_dt - created_dt).total_seconds()
+                
+                # Kalan saniye
+                remaining_seconds = (shipped_deadline_dt - simdi_dt).total_seconds()
+
+                if remaining_seconds < 0:
+                    kalan_sure_text = "⚠️ GECİKMEDE"
+                    bar_value = 1.0 # Bar tamamen dolu (Kırmızı anlamında)
+                else:
+                    # Saat ve dakika hesabı
+                    rem_hours = int(remaining_seconds // 3600)
+                    rem_mins = int((remaining_seconds % 3600) // 60)
+                    kalan_sure_text = f"{rem_hours} sa {rem_mins} dk"
+                    
+                    # Bar doluluk oranı (Geçen Süre / Toplam Süre)
+                    if total_duration > 0:
+                        ratio = elapsed_duration / total_duration
+                        bar_value = min(max(ratio, 0.0), 1.0)
+                    else:
+                        bar_value = 0.0
+        except:
+            kalan_sure_text = "-"
+            bar_value = 0.0
+
         processed.append({
             "Sipariş No": str(o.get('tracker_code', o.get('order_id'))),
             "Mağaza": o.get('shop', 'Bilinmiyor'),
             "Potansiyel Depolar": resolve_warehouse_names(o.get('warehouses')),
             "İşlemi Yapan": readable_code,
-            "Durum": tr_status, "Müşteri": o.get('customer_name'),
-            "Adet": o.get('total_quantity', 0), "Tutar": total_price,
-            "packed_today_flag": 1 if packed_today else 0
+            "Durum": tr_status, 
+            "Müşteri": o.get('customer_name'),
+            "Adet": o.get('total_quantity', 0), 
+            "Tutar": total_price,
+            "packed_today_flag": 1 if packed_today else 0,
+            "Kalan Süre": kalan_sure_text,  # Metin Alanı
+            "Süre Kullanımı": bar_value     # Bar Alanı (0.0 - 1.0)
         })
     return pd.DataFrame(processed)
 
@@ -311,57 +369,35 @@ if not df_pivot_source.empty:
 else: st.info("Veri yok.")
 
 # =========================================================================
+# BEKLEYENLER (BAŞLIKTA TOPLAM SAYI + RENKLİ + SÜRE BARLI)
 # =========================================================================
-# GÜNCELLENEN KISIM: BEKLEYENLER (BAŞLIKTA TOPLAM SAYI)
-# =========================================================================
-
-# 1. Önce filtreleme yapıyoruz ki sayıyı bilelim
 df_waiting_only = df[df['Durum'] == 'Bekliyor']
 total_waiting_count = len(df_waiting_only)
 
-# 2. Başlığı sayı ile birlikte yazdırıyoruz
 st.markdown(f"### ⏳ Bekleyen Sipariş Dağılımı ({total_waiting_count})")
 
 if not df_waiting_only.empty:
-    # 3. Her depo için bir kova (bucket) hazırla
     depo_buckets = {}
-    
     for index, row in df_waiting_only.iterrows():
         potentials_str = str(row['Potansiyel Depolar'])
-        if potentials_str == "-" or not potentials_str:
-            continue
-            
+        if potentials_str == "-" or not potentials_str: continue
         potential_list = [p.strip() for p in potentials_str.split(',')]
-        
         for p_name in potential_list:
-            if p_name not in depo_buckets:
-                depo_buckets[p_name] = []
+            if p_name not in depo_buckets: depo_buckets[p_name] = []
             depo_buckets[p_name].append(row)
     
     if depo_buckets:
-        # SIRALAMA: Adet sayısına göre büyükten küçüğe
         sorted_items = sorted(depo_buckets.items(), key=lambda item: len(item[1]), reverse=True)
-        
-        # Etiketleri oluştur
         tabs_labels = [f"{name} ({len(orders)})" for name, orders in sorted_items]
-        
-        # Sekmeleri oluştur
         tabs = st.tabs(tabs_labels)
         
-        # RENKLENDİRME (CSS INJECTION)
         css_styles = ""
         for i, (name, orders) in enumerate(sorted_items):
             count = len(orders)
-            
-            # Renk Skalası
-            if count >= 20:
-                color = "#d32f2f" # Koyu Kırmızı
-            elif count >= 10:
-                color = "#f57c00" # Turuncu
-            elif count >= 5:
-                color = "#1976d2" # Mavi
-            else:
-                color = "#2e7d32" # Yeşil
+            if count >= 20: color = "#d32f2f" 
+            elif count >= 10: color = "#f57c00" 
+            elif count >= 5: color = "#1976d2" 
+            else: color = "#2e7d32" 
             
             css_styles += f"""
             div[data-baseweb="tab-list"] button:nth-of-type({i+1}) p {{
@@ -373,20 +409,22 @@ if not df_waiting_only.empty:
                 border-bottom-color: {color} !important;
             }}
             """
-        
         st.markdown(f"<style>{css_styles}</style>", unsafe_allow_html=True)
         
-        # İçerikleri Doldur
         for i, (d_name, orders) in enumerate(sorted_items):
             with tabs[i]:
                 df_subset = pd.DataFrame(orders)
+                # BURADA SÜRE KOLONUNU GÖSTERİYORUZ
                 st.dataframe(
                     df_subset, 
                     use_container_width=True, 
                     hide_index=True,
                     column_config={
                         "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f ₺"),
-                        "Adet": st.column_config.ProgressColumn("Adet", min_value=0, max_value=10)
+                        "Adet": st.column_config.ProgressColumn("Adet", min_value=0, max_value=10),
+                        # YENİ KOLON KONFİGÜRASYONU
+                        "Süre Kullanımı": st.column_config.ProgressColumn("Aciliyet", min_value=0, max_value=1),
+                        "Kalan Süre": st.column_config.TextColumn("Kalan Zaman")
                     }
                 )
     else:
@@ -395,9 +433,6 @@ else:
     st.success("Harika! Bekleyen sipariş bulunmuyor.")
 
 st.markdown("---")
-# =========================================================================
-# =========================================================================
-# =========================================================================
 
 st.markdown("### 📋 Tüm Siparişler")
 f1, f2, f3 = st.columns(3)
@@ -406,22 +441,21 @@ with f2: sel_actor = st.multiselect("Şube Filtrele", sorted(list(df[df['İşlem
 with f3: search_term = st.text_input("Sipariş Ara")
 
 df_show = df.copy()
+if sel_status: df_show = df_show[df_show['Durum'].isin(sel_status)]
 
-# 1. Durum Filtresi
-if sel_status: 
-    df_show = df_show[df_show['Durum'].isin(sel_status)]
-
-# 2. Şube Filtresi (GELİŞMİŞ MANTIK)
 if sel_actor:
     pattern = '|'.join(sel_actor)
     cond1 = df_show['İşlemi Yapan'].isin(sel_actor)
     cond2 = (df_show['Durum'] == 'Bekliyor') & (df_show['Potansiyel Depolar'].str.contains(pattern, na=False, regex=True))
     df_show = df_show[cond1 | cond2]
 
-# 3. Arama Filtresi
 if search_term: 
     df_show = df_show[df_show['Sipariş No'].str.contains(search_term, case=False) | df_show['Müşteri'].str.contains(search_term, case=False)]
 
+# ANA TABLODA DA SÜRE BARINI GÖSTER
 st.dataframe(df_show, use_container_width=True, hide_index=True, column_config={
-    "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f ₺")
+    "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f ₺"),
+    "Adet": st.column_config.ProgressColumn("Adet", format="%f", min_value=0, max_value=10),
+    "Süre Kullanımı": st.column_config.ProgressColumn("Aciliyet", min_value=0, max_value=1),
+    "Kalan Süre": st.column_config.TextColumn("Kalan Zaman")
 })
