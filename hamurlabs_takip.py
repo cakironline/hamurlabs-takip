@@ -161,7 +161,7 @@ def fetch_all_orders(use_demo_data=False):
         while len(all_orders) < total_records:
             payload = {
                 "company_id": "1",
-                "updated_at__start": start_str, 
+                "updated_at__start": created_start_str, 
                 "updated_at__end": end_str,
                 "size": PAGE_SIZE,
                 "start": start,
